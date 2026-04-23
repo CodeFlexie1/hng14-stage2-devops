@@ -1,22 +1,28 @@
 from fastapi import FastAPI
-import redis
-import uuid
+from uuid import uuid4
 import os
+import redis
 
 app = FastAPI()
 
-r = redis.Redis(host="localhost", port=6379)
+# Connect to Redis
+redis_host = os.getenv("REDIS_HOST", "redis")
+redis_client = redis.Redis(host=redis_host, port=6379, db=0, decode_responses=True)
 
-@app.post("/jobs")
-def create_job():
-    job_id = str(uuid.uuid4())
-    r.lpush("job", job_id)
-    r.hset(f"job:{job_id}", "status", "queued")
-    return {"job_id": job_id}
+@app.get("/")
+def home():
+    return {"status": "healthy"}
 
-@app.get("/jobs/{job_id}")
-def get_job(job_id: str):
-    status = r.hget(f"job:{job_id}", "status")
-    if not status:
-        return {"error": "not found"}
-    return {"job_id": job_id, "status": status.decode()}
+@app.post("/submit")
+def submit_job():
+    job_id = str(uuid4())
+    # Pushes the ID to the Redis queue for the worker
+    redis_client.lpush("job_queue", job_id)
+    return {"status": "success", "job_id": job_id}
+
+# Route to check status (your dashboard will need this)
+@app.get("/status/{job_id}")
+def get_status(job_id: str):
+    # Check if the worker moved it to a 'completed' list or similar
+    # For now, we'll just return that it's processing
+    return {"job_id": job_id, "status": "processing"}

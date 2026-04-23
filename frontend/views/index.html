@@ -21,7 +21,7 @@
     const jobIds = [];
 
     async function submitJob() {
-      const res = await fetch('/submit', { method: 'POST' });
+      const res = await fetch('http://51.20.53.183:8000/submit', { method: 'POST' });
       const data = await res.json();
       document.getElementById('result').innerText = `Submitted: ${data.job_id}`;
       jobIds.push(data.job_id);
