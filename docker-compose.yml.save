@@ -1,0 +1,84 @@
+version: '3.8'
+
+services:
+  api:
+    build: ./api
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 512M
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+
+  frontend:
+    build: ./frontend
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 512M
+    ports:
+      - "3001:3000"
+
+  worker:
+    build: ./worker
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 512M
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:alpine
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
+# ==========================================
+# STAGE 1: Builder
+# ==========================================
+FROM node:18-alpine AS builder
+
+WORKDIR /app
+
+# Copy package files and install dependencies
+COPY package*.json ./
+RUN npm install
+
+# Copy the rest of the application code
+COPY . .
+
+# ==========================================
+# STAGE 2: Runner (Production)
+# ==========================================
+FROM node:18-alpine
+
+WORKDIR /app
+
+# The node:alpine image actually comes with a built-in non-root user named "node".
+# We will use that to satisfy the security requirement.
+
+# Copy everything from the builder stage
+COPY --from=builder /app /app
+
+# Give ownership of the files to the non-root 'node' user
+RUN chown -R node:node /app
+
+# Switch to the non-root user
+USER node
+
+# Expose the port the frontend runs on (usually 3000)
+EXPOSE 3000
+
+# Start the application
+CMD ["npm", "start"]

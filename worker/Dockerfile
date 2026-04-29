@@ -1,23 +1,28 @@
-# Stage 1: Builder
-FROM python:3.11-slim AS builder
-WORKDIR /app
+# STAGE 1: Builder
+FROM python:3.9-slim AS builder
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
 COPY requirements.txt .
-RUN pip install --user --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Stage 2: Final
-FROM python:3.11-slim
-# Create the non-root user (HNG REQUIREMENT)
-RUN useradd -m -u 1001 appuser
+# STAGE 2: Runner
+FROM python:3.9-slim
+
+RUN useradd --create-home devopsuser
+
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
 WORKDIR /app
-COPY --from=builder /root/.local /home/appuser/.local
 COPY . .
-RUN chown -R appuser:appuser /app
-USER appuser
-ENV PATH=/home/appuser/.local/bin:$PATH
+RUN chown -R devopsuser:devopsuser /app
 
-# Workers usually don't have a port to expose, but they need a healthcheck!
-# We check if the process is running
+USER devopsuser
+
+# FIX: Use Python to check if it can successfully talk to Redis
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
-  CMD ps aux | grep "python" || exit 1
+  CMD python -c "import os, redis; redis.Redis(host=os.environ.get('REDIS_HOST', 'redis'), port=6379).ping()" || exit 1
 
 CMD ["python", "main.py"]

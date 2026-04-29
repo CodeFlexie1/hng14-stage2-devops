@@ -1,70 +1,81 @@
 version: '3.8'
 
+# 1. Named Internal Network
+networks:
+  hng_network:
+    driver: bridge
+
 services:
   redis:
     image: redis:alpine
     restart: always
+    networks:
+      - hng_network
+    # Redis needs a healthcheck so other services know when it is actually ready
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
-    networks:
-      - hng_network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
 
   api:
     build: ./api
-    restart: always
-    # ADDED PORTS SO YOU CAN TEST FROM THE HOST
     ports:
-      - "8000:8000"
-    environment:
-      - REDIS_HOST=redis
+      - "${API_PORT:-8000}:8000"
+    restart: always
+    networks:
+      - hng_network
+    # 2. Strict Startup
     depends_on:
       redis:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
-    networks:
-      - hng_network
+    # 3. No Hardcoded Configs
+    environment:
+      - REDIS_HOST=${REDIS_HOST}
+      - REDIS_PORT=${REDIS_PORT}
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 256M
 
+  # 4. The Missing Worker Service
   worker:
     build: ./worker
     restart: always
-    environment:
-      - REDIS_HOST=redis
+    networks:
+      - hng_network
     depends_on:
       redis:
         condition: service_healthy
-    healthcheck:
-      disable: true
-    networks:
-      - hng_network
+      api: # Worker shouldn't start until the API is healthy either
+        condition: service_healthy
+    environment:
+      - REDIS_HOST=${REDIS_HOST}
+      - REDIS_PORT=${REDIS_PORT}
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 128M
 
   frontend:
     build: ./frontend
-    # USING 3001 TO AVOID THE "ADDRESS ALREADY IN USE" ERROR
     ports:
-      - "3001:3000"
-    environment:
-      - API_URL=http://api:8000
+      - "${FRONTEND_PORT:-3001}:3000"
+    restart: always
+    networks:
+      - hng_network
     depends_on:
       api:
         condition: service_healthy
-    healthcheck:
-      # INTERNAL CHECK: The app inside is still on 3000
-      test: ["CMD", "curl", "-f", "http://localhost:3000/"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
-    networks:
-      - hng_network
-
-networks:
-  hng_network:
-    name: hng_internal_network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 256M

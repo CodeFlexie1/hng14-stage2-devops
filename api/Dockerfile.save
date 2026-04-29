@@ -1,28 +1,34 @@
 # STAGE 1: Builder
 FROM python:3.9-slim AS builder
 
+# Create and activate virtual environment
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
+# Install dependencies into the venv
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # STAGE 2: Runner
 FROM python:3.9-slim
 
+# Create the non-root user
 RUN useradd --create-home devopsuser
 
+# Copy the venv from the builder stage
 COPY --from=builder /opt/venv /opt/venv
+
+# CRITICAL: Activate the venv for the runner
 ENV PATH="/opt/venv/bin:$PATH"
 
+# Set up the application
 WORKDIR /app
 COPY . .
 RUN chown -R devopsuser:devopsuser /app
 
+# Switch to the non-root user
 USER devopsuser
 
-# HEALTHCHECK required by the task
-HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/')" || exit 1
-
+# Start the API
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+how do i create the .env.example file and also should i share the dockerfile of worker and api so i can copy them and paste it
