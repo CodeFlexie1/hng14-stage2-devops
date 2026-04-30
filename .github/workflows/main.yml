@@ -47,17 +47,14 @@ jobs:
           cd frontend && npm install eslint && npx eslint . --ext .js,.jsx || true
 
       # ==========================================
-      # STAGE 2: TEST (SIMPLIFIED PATHS)
+      # STAGE 2: TEST
       # ==========================================
       - name: Run Unit Tests
         run: |
-          # Move into the api folder so Python finds 'main.py' naturally
           cd api
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
-          # Using 'python -m pytest' is more reliable in CI/CD
           python -m pytest test_main.py --cov=. --cov-report=xml
-          # Move the report to the root so the next step can find it
           mv coverage.xml ../
           
       - name: Upload Coverage Report
@@ -71,7 +68,6 @@ jobs:
       # ==========================================
       - name: Build and Push Docker Images
         run: |
-          # Build with a local tag AND a registry tag
           docker build -t api:latest -t localhost:5000/api:latest ./api
           docker push localhost:5000/api:latest
           
@@ -82,12 +78,11 @@ jobs:
           docker push localhost:5000/frontend:latest
 
       # ==========================================
-      # STAGE 4: SECURITY SCAN (LOCAL TAG)
+      # STAGE 4: SECURITY SCAN
       # ==========================================
       - name: Trivy Security Scan
         uses: aquasecurity/trivy-action@master
         with:
-          # Scan the local tag 'api:latest' (more reliable in CI)
           image-ref: 'api:latest'
           format: 'sarif'
           output: 'trivy-results.sarif'
@@ -101,29 +96,31 @@ jobs:
           sarif_file: 'trivy-results.sarif'
 
       # ==========================================
-      # STAGE 5: INTEGRATION TEST
+      # STAGE 5: INTEGRATION TEST (V2 FIX)
       # ==========================================
       - name: Integration Test
         run: |
           cp .env.example .env
-          docker-compose up -d
+          # Changed to 'docker compose'
+          docker compose up -d
           echo "Waiting for stack startup..."
           sleep 20
           if curl -s http://localhost:8000/ | grep -q "healthy"; then
             echo "Integration Success!"
           else
             echo "Integration Failure!"
-            docker-compose logs
+            docker compose logs
             exit 1
           fi
-          docker-compose down
+          docker compose down
 
       # ==========================================
-      # STAGE 6: DEPLOY
+      # STAGE 6: DEPLOY (V2 FIX)
       # ==========================================
       - name: Scripted Rolling Update
         run: |
-          docker-compose up -d
+          # Changed to 'docker compose'
+          docker compose up -d
           echo "Rolling update simulated."
           sleep 5
-          docker-compose down
+          docker compose down
