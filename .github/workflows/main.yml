@@ -5,7 +5,6 @@ on:
     branches:
       - main
 
-# NEW: This gives the robot permission to upload security reports
 permissions:
   contents: read
   security-events: write
@@ -24,6 +23,9 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      # ==========================================
+      # STAGE 1: LINT
+      # ==========================================
       - name: Lint Dockerfiles (hadolint)
         run: |
           docker run --rm -i hadolint/hadolint < api/Dockerfile || true
@@ -42,22 +44,21 @@ jobs:
 
       - name: Lint JavaScript (eslint)
         run: |
-          cd frontend
-          npm install eslint
-          npx eslint . --ext .js,.jsx || true
+          cd frontend && npm install eslint && npx eslint . --ext .js,.jsx || true
 
       # ==========================================
-      # STAGE 2: TEST (FIXED PATHS)
+      # STAGE 2: TEST (SIMPLIFIED PATHS)
       # ==========================================
       - name: Run Unit Tests
-        env:
-          # NEW: This tells Python to look inside the 'api' folder for your code
-          PYTHONPATH: ${{ github.workspace }}/api
         run: |
-          pip install -r api/requirements.txt
+          # Move into the api folder so Python finds 'main.py' naturally
+          cd api
+          pip install -r requirements.txt
           pip install pytest pytest-cov httpx
-          # Run pytest from the root but tell it where the tests are
-          pytest api/test_main.py --cov=api --cov-report=xml
+          # Run tests and generate coverage
+          pytest test_main.py --cov=. --cov-report=xml
+          # Move the report to the root so the next step can find it
+          mv coverage.xml ../
           
       - name: Upload Coverage Report
         uses: actions/upload-artifact@v4
@@ -70,22 +71,24 @@ jobs:
       # ==========================================
       - name: Build and Push Docker Images
         run: |
-          docker build -t localhost:5000/api:latest ./api
+          # Build with a local tag AND a registry tag
+          docker build -t api:latest -t localhost:5000/api:latest ./api
           docker push localhost:5000/api:latest
           
-          docker build -t localhost:5000/worker:latest ./worker
+          docker build -t worker:latest -t localhost:5000/worker:latest ./worker
           docker push localhost:5000/worker:latest
           
-          docker build -t localhost:5000/frontend:latest ./frontend
+          docker build -t frontend:latest -t localhost:5000/frontend:latest ./frontend
           docker push localhost:5000/frontend:latest
 
       # ==========================================
-      # STAGE 4: SECURITY SCAN (FIXED PERMISSIONS)
+      # STAGE 4: SECURITY SCAN (LOCAL TAG)
       # ==========================================
       - name: Trivy Security Scan
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: 'localhost:5000/api:latest'
+          # Scan the local tag 'api:latest' (more reliable in CI)
+          image-ref: 'api:latest'
           format: 'sarif'
           output: 'trivy-results.sarif'
           severity: 'CRITICAL'
@@ -93,7 +96,7 @@ jobs:
 
       - name: Upload Trivy SARIF Report
         uses: github/codeql-action/upload-sarif@v3
-        if: always() # Upload even if the scan found issues
+        if: always()
         with:
           sarif_file: 'trivy-results.sarif'
 
@@ -104,14 +107,12 @@ jobs:
         run: |
           cp .env.example .env
           docker-compose up -d
-          echo "Waiting for full stack startup..."
+          echo "Waiting for stack startup..."
           sleep 20
-          
-          # Simple check to see if API is responding
           if curl -s http://localhost:8000/ | grep -q "healthy"; then
-            echo "Integration Test Passed!"
+            echo "Integration Success!"
           else
-            echo "Integration Test Failed!"
+            echo "Integration Failure!"
             docker-compose logs
             exit 1
           fi
@@ -123,6 +124,6 @@ jobs:
       - name: Scripted Rolling Update
         run: |
           docker-compose up -d
-          echo "Simulating rolling update..."
-          sleep 10
+          echo "Rolling update simulated."
+          sleep 5
           docker-compose down
