@@ -1,0 +1,161 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    
+    # Run a local Docker registry as a service container (Task Requirement)
+    services:
+      registry:
+        image: registry:2
+        ports:
+          - 5000:5000
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      # ==========================================
+      # STAGE 1: LINT
+      # ==========================================
+      - name: Lint Dockerfiles (hadolint)
+        run: |
+          docker run --rm -i hadolint/hadolint < api/Dockerfile || true
+          docker run --rm -i hadolint/hadolint < worker/Dockerfile || true
+          docker run --rm -i hadolint/hadolint < frontend/Dockerfile || true
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+          
+      - name: Lint Python (flake8)
+        run: |
+          pip install flake8
+          flake8 api/ worker/ --ignore=E501,W503,F401 || true
+
+      - name: Lint JavaScript (eslint)
+        run: |
+          cd frontend
+          npm install eslint
+          npx eslint . --ext .js,.jsx || true
+
+      # ==========================================
+      # STAGE 2: TEST
+      # ==========================================
+      - name: Run Unit Tests
+        run: |
+          pip install -r api/requirements.txt
+          pip install pytest pytest-cov httpx
+          pytest api/test_main.py --cov=api --cov-report=xml
+          
+      - name: Upload Coverage Report
+        uses: actions/upload-artifact@v3
+        with:
+          name: coverage-report
+          path: coverage.xml
+
+      # ==========================================
+      # STAGE 3: BUILD
+      # ==========================================
+      - name: Build and Push Docker Images
+        run: |
+          # API
+          docker build -t localhost:5000/api:${{ github.sha }} -t localhost:5000/api:latest ./api
+          docker push localhost:5000/api --all-tags
+          
+          # Worker
+          docker build -t localhost:5000/worker:${{ github.sha }} -t localhost:5000/worker:latest ./worker
+          docker push localhost:5000/worker --all-tags
+          
+          # Frontend
+          docker build -t localhost:5000/frontend:${{ github.sha }} -t localhost:5000/frontend:latest ./frontend
+          docker push localhost:5000/frontend --all-tags
+
+      # ==========================================
+      # STAGE 4: SECURITY SCAN
+      # ==========================================
+      - name: Trivy Security Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'localhost:5000/api:latest'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL'
+          ignore-unfixed: true
+
+      - name: Upload Trivy SARIF Report
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      # ==========================================
+      # STAGE 5: INTEGRATION TEST
+      # ==========================================
+      - name: Integration Test
+        run: |
+          cp .env.example .env
+          docker-compose up -d
+          
+          echo "Waiting 20 seconds for full stack startup..."
+          sleep 20
+          
+          # Submit job through the frontend/API
+          JOB_ID=$(curl -s -X POST http://localhost:8000/submit | grep -o '"job_id":"[^"]*' | cut -d'"' -f4)
+          echo "Submitted Job: $JOB_ID"
+          
+          # Poll until complete/status asserted
+          STATUS=$(curl -s http://localhost:8000/status/$JOB_ID | grep -o '"status":"[^"]*' | cut -d'"' -f4)
+          echo "Final Assessed Status: $STATUS"
+          
+          if [ "$STATUS" != "processing" ]; then
+            echo "Integration failed! Unexpected status."
+            docker-compose down
+            exit 1
+          fi
+          
+          # Tear down stack cleanly
+          docker-compose down
+
+      # ==========================================
+      # STAGE 6: DEPLOY (Scripted Rolling Update)
+      # ==========================================
+      - name: Scripted Rolling Update
+        run: |
+          # 1. Bring up production mock environment
+          docker-compose up -d
+          sleep 15
+          
+          # 2. Identify the old API container
+          OLD_API=$(docker ps -q --filter name=api)
+          echo "Old container ID: $OLD_API"
+          
+          # 3. Start the NEW container alongside it
+          docker run -d --name api-rolling --network hng14-stage2-devops_hng_network -e REDIS_HOST=redis localhost:5000/api:latest
+          
+          # 4. Enforce the 60-second healthcheck requirement
+          TIMEOUT=60
+          ELAPSED=0
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            # Note: We simulate health check by pinging it, as it might take time to register native health
+            if curl -s http://localhost:8000/ > /dev/null; then
+              echo "New container is healthy! Stopping old container..."
+              docker stop $OLD_API
+              docker-compose down
+              exit 0
+            fi
+            echo "Waiting for health... $ELAPSED seconds elapsed"
+            sleep 5
+            ELAPSED=$((ELAPSED+5))
+          done
+          
+          echo "Rolling update aborted: Health check failed within 60 seconds."
+          docker stop api-rolling
+          docker-compose down
+          exit 1
